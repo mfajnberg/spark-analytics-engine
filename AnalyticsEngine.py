@@ -1,13 +1,13 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, collect_list
+from pyspark.sql.functions import from_json, col
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType
 from sklearn.linear_model import LinearRegression
 import numpy as np
 
-spark = SparkSession.builder.appName("SmartFactoryAnalyticsEngine").getOrCreate()
+SPARK = SparkSession.builder.appName("SmartFactoryAnalyticsEngine").getOrCreate()
 
-# For incoming JSON data
-json_schema = StructType([
+# For incoming JSON data:
+JSON_SCHEMA = StructType([
     StructField("MaschinenId", IntegerType(), True),
     StructField("Zeitstempel", StringType(), True),
     StructField("Temperatur", DoubleType(), True)
@@ -18,7 +18,7 @@ Read streaming mock data from a socket, for simplicity's sake.
 In a production environment, this would be replaced with various Kafka topics from the actual smart factory, 
 e.g. one per machine-id and undergoing aggregation into micro-batches before any further processing.
 """
-lines = spark \
+lines = SPARK \
     .readStream \
     .format("socket") \
     .option("host", "localhost") \
@@ -26,11 +26,11 @@ lines = spark \
     .load()
 
 """
-`historic_data` is used for performing linear regression over a temperature data window.
-In a production environment, this would be replaced with a connection to something like Hadoop HDFS via Kafka.
+`historic_data` is used for performing linear regression over a window of temperature data in this demo.
+In a production environment, this would instead be a connection to something like Hadoop HDFS via Kafka.
 """ 
 historic_data = {}
-window_size = 25
+DATA_WINDOW_SIZE = 25 # This many data points are taken into account by the LR model
 
 """
 Here parallelization is achieved at the Spark DataFrame level (parallel processing of batches), 
@@ -40,20 +40,26 @@ This should be sufficient, since the processed data easily fits into memory,
 and good performance is ensured by the parallelized linear regression implementation of scikit-learn.
 """
 def process_micro_batch(df, epoch_id):
-    for row in df.orderBy("MaschinenId").collect():
+    for row in df.collect():
         machine_id = row["MaschinenId"]
         machine_temperature = row["Temperatur"]
         historic_data.setdefault(machine_id, []).append(machine_temperature)
         if historic_data[machine_id]:
-            data_window = historic_data[machine_id][-window_size:]
+            data_window = historic_data[machine_id][-DATA_WINDOW_SIZE:]
             X = np.arange(len(data_window)).reshape(-1, 1)
             y = np.array(data_window)
             model = LinearRegression().fit(X, y)
+
+            ### Logic for handling critical values can go here.
+
+            ### Monitoring:
             slope = round(model.coef_[0], 2)
-            print(f"Id {machine_id}: {data_window[-1]}°C")
-            print(f"LR Slope: {slope} (rising)" if slope > 0 else (f"LR Slope: {slope} (falling)" if slope < 0 else "(stable)"))
-            print(row["Zeitstempel"])
-            # print("Intercept: ", model.intercept_)
+            print(f"Machine {machine_id}")
+            print(f"{data_window[-1]}°C")
+            print(f"LR Slope: {slope}")
+            print(f"+++Rising+++" if slope > 0 else (f"---Falling---" if slope < 0 else "===Stable==="))
+            # print("LR Intercept: "model.intercept_)
+            # print(row["Zeitstempel"])
             print("")
 
 """
@@ -62,10 +68,14 @@ a seperate batch processing data pipeline should be implemented.
 
 Here, on the other hand, data from the stream is divided into micro-batches, 
 and the processing logic is applied in parallel to each micro-batch.
+
+This can (partly) be illustrated by changing a few lines in `SockedDataProducer.py`:
+    + uncomment the `machine_id` increment
+    + accelerate the streaming of mock data, e.g. `time.sleep(.01)`
 """
-query = lines \
+QUERY = lines \
     .select(
-        from_json(lines.value, json_schema).alias("data")
+        from_json(lines.value, JSON_SCHEMA).alias("data")
     ).select(
         col("data.MaschinenId").alias("MaschinenId"),
         col("data.Zeitstempel").alias("Zeitstempel"),
@@ -75,7 +85,7 @@ query = lines \
     .outputMode("append") \
     .foreachBatch(process_micro_batch) \
     .start()
-query.awaitTermination()
+QUERY.awaitTermination()
 
 """
 What changes when this is deployed to a cluster?
