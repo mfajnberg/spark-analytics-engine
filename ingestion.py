@@ -26,5 +26,5 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         json_data = json.dumps(data) + "\n"
         conn.sendall(json_data.encode('utf-8'))
 
-        # mock_machine_id += 1 
+        mock_machine_id += 1 
         time.sleep(1)
